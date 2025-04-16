@@ -16,6 +16,7 @@ const initializeMappingsFile = async () => {
   try {
     await fs.access(MAPPINGS_FILE);
   } catch (error) {
+    console.log('Initializing mappings file...');
     await fs.writeFile(MAPPINGS_FILE, JSON.stringify({}));
   }
 };
@@ -35,8 +36,10 @@ const loadMappings = async () => {
 const saveMappings = async (mappings) => {
   try {
     await fs.writeFile(MAPPINGS_FILE, JSON.stringify(mappings, null, 2));
+    console.log('Mappings saved successfully');
   } catch (error) {
     console.error('Error saving mappings:', error);
+    throw error;
   }
 };
 
@@ -55,11 +58,12 @@ let messages = [];
 app.get('/discord/callback', async (req, res) => {
   const { code, state } = req.query;
   if (!code || !state) {
+    console.log('Missing code or state:', { code, state });
     return res.status(400).send({ error: 'Missing code or state' });
   }
 
   try {
-    // Exchange code for access token
+    console.log('Exchanging code for access token...');
     const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET,
@@ -72,15 +76,23 @@ app.get('/discord/callback', async (req, res) => {
 
     const { access_token } = tokenResponse.data;
     if (!access_token) {
+      console.log('No access token received:', tokenResponse.data);
       return res.status(400).send({ error: 'Failed to obtain access token' });
     }
 
-    // Get user info from Discord
+    console.log('Access token obtained, fetching user info...');
     const userResponse = await axios.get('https://discord.com/api/users/@me', {
       headers: { Authorization: `Bearer ${access_token}` }
     });
 
-    const discordId = userResponse.data.username;
+    console.log('User info received:', userResponse.data);
+    // Use global_name if available, otherwise fall back to username
+    const discordId = userResponse.data.global_name || userResponse.data.username;
+    if (!discordId) {
+      console.log('No discordId found in user data:', userResponse.data);
+      return res.status(400).send({ error: 'Failed to retrieve Discord ID' });
+    }
+
     const address = state; // The state parameter is the user's wallet address
 
     // Load existing mappings
@@ -90,23 +102,27 @@ app.get('/discord/callback', async (req, res) => {
     mappings[address.toLowerCase()] = discordId;
     await saveMappings(mappings);
 
-    // Redirect back to the frontend
-    res.redirect('https://treasure-hunt-frontend-livid.vercel.app');
+    console.log(`Saved mapping for address ${address}: ${discordId}`);
+    // Redirect back to the frontend with a success indicator
+    res.redirect('https://treasure-hunt-frontend-livid.vercel.app?linked=true');
   } catch (error) {
     console.error('Error in Discord callback:', error.response?.data || error.message);
-    res.status(500).send({ error: 'Failed to link Discord' });
+    res.redirect('https://treasure-hunt-frontend-livid.vercel.app?linked=false&error=' + encodeURIComponent(error.message));
   }
 });
 
 // Endpoint to get Discord ID for an address
 app.get('/discord/:address', async (req, res) => {
   const { address } = req.params;
+  console.log(`Fetching Discord ID for address: ${address}`);
   const mappings = await loadMappings();
   const discordId = mappings[address.toLowerCase()];
   
   if (discordId) {
+    console.log(`Found Discord ID: ${discordId}`);
     res.json({ discordId });
   } else {
+    console.log(`No Discord ID found for address: ${address}`);
     res.status(404).send({ error: 'Discord ID not found for this address' });
   }
 });
