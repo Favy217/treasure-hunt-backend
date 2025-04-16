@@ -33,6 +33,7 @@ const saveMappings = async (mappings) => {
     await fs.writeFile(MAPPINGS_FILE, JSON.stringify(mappings, null, 2));
   } catch (error) {
     console.error('Error saving mappings:', error);
+    throw new Error('Failed to save mappings');
   }
 };
 
@@ -79,8 +80,20 @@ app.get('/discord/callback', async (req, res) => {
     }
 
     const address = state;
-
     const mappings = await loadMappings();
+
+    // Check if the Discord ID is already linked to another address
+    const existingAddress = Object.keys(mappings).find(
+      addr => mappings[addr] === discordId && addr.toLowerCase() !== address.toLowerCase()
+    );
+    if (existingAddress) {
+      console.log(`Discord ID ${discordId} is already linked to address ${existingAddress}. Cannot link to ${address}.`);
+      return res.status(409).send({ 
+        error: 'Discord ID already linked to another address',
+        existingAddress: existingAddress
+      });
+    }
+
     mappings[address.toLowerCase()] = discordId;
     await saveMappings(mappings);
     console.log(`Successfully saved Discord ID for address ${address}: ${discordId}`);
