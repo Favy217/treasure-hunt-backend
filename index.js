@@ -3,18 +3,29 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const cors = require('cors');
+const { WebSocketServer } = require('ws');
+const http = require('http');
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
 app.use(cors());
 app.use(express.json());
 
 const MAPPINGS_FILE = path.join(__dirname, 'discordMappings.json');
+const MESSAGES_FILE = path.join(__dirname, 'messages.json');
 
-const initializeMappingsFile = async () => {
+const initializeFiles = async () => {
   try {
     await fs.access(MAPPINGS_FILE);
   } catch (error) {
     await fs.writeFile(MAPPINGS_FILE, JSON.stringify({}));
+  }
+  try {
+    await fs.access(MESSAGES_FILE);
+  } catch (error) {
+    await fs.writeFile(MESSAGES_FILE, JSON.stringify([]));
   }
 };
 
@@ -37,13 +48,53 @@ const saveMappings = async (mappings) => {
   }
 };
 
-initializeMappingsFile();
+const loadMessages = async () => {
+  try {
+    const data = await fs.readFile(MESSAGES_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Error loading messages:', error);
+    return [];
+  }
+};
+
+const saveMessages = async (messages) => {
+  try {
+    await fs.writeFile(MESSAGES_FILE, JSON.stringify(messages, null, 2));
+  } catch (error) {
+    console.error('Error saving messages:', error);
+    throw new Error('Failed to save messages');
+  }
+};
+
+initializeFiles();
 
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID || 'YOUR_CLIENT_ID';
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || 'YOUR_CLIENT_SECRET';
 const REDIRECT_URI = 'https://treasure-hunt-backend-93cc.onrender.com/discord/callback';
 
-let messages = [];
+// WebSocket setup
+wss.on('connection', (ws) => {
+  console.log('New WebSocket connection');
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message.toString());
+      // Broadcast the message to all connected clients
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(data));
+        }
+      });
+    } catch (error) {
+      console.error('Error processing WebSocket message:', error);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('WebSocket disconnected');
+  });
+});
 
 app.get('/discord/callback', async (req, res) => {
   const { code, state } = req.query;
@@ -88,7 +139,7 @@ app.get('/discord/callback', async (req, res) => {
     );
     if (existingAddress) {
       console.log(`Discord ID ${discordId} is already linked to address ${existingAddress}. Cannot link to ${address}.`);
-      return res.status(409).send({ 
+      return res.status(409).send({
         error: 'Discord ID already linked to another address',
         existingAddress: existingAddress
       });
@@ -97,6 +148,14 @@ app.get('/discord/callback', async (req, res) => {
     mappings[address.toLowerCase()] = discordId;
     await saveMappings(mappings);
     console.log(`Successfully saved Discord ID for address ${address}: ${discordId}`);
+
+    // Emit userConnected event via WebSocket
+    const userConnectedEvent = JSON.stringify({ type: "userConnected", address });
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(userConnectedEvent);
+      }
+    });
 
     res.redirect('https://treasure-hunt-frontend-livid.vercel.app');
   } catch (error) {
@@ -136,21 +195,33 @@ app.post('/discord/forgive', async (req, res) => {
   }
 });
 
-app.get('/api/chat', (req, res) => {
+app.get('/api/chat', async (req, res) => {
+  const messages = await loadMessages();
   res.json(messages);
 });
 
-app.post('/api/chat', (req, res) => {
+app.post('/api/chat', async (req, res) => {
   const { user, text } = req.body;
   if (!user || !text) {
     return res.status(400).send({ error: 'User and text are required' });
   }
   const message = { user, text, timestamp: new Date().toISOString() };
+  const messages = await loadMessages();
   messages.push(message);
+  await saveMessages(messages);
+
+  // Emit newChatMessage event via WebSocket
+  const newChatMessageEvent = JSON.stringify({ type: "newChatMessage", message });
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(newChatMessageEvent);
+    }
+  });
+
   res.status(201).json(message);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
