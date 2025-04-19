@@ -205,7 +205,12 @@ app.post('/api/chat', async (req, res) => {
   if (!user || !text) {
     return res.status(400).send({ error: 'User and text are required' });
   }
-  const message = { user, text, timestamp: new Date().toISOString() };
+  const message = { 
+    id: Date.now() + '-' + Math.random().toString(36).substr(2, 9), // Unique ID
+    user, 
+    text, 
+    timestamp: new Date().toISOString() 
+  };
   const messages = await loadMessages();
   messages.push(message);
   await saveMessages(messages);
